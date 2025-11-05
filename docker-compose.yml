@@ -1,0 +1,425 @@
+# ============================================================================
+# DOCKER COMPOSE CONFIGURATION FILE
+# ============================================================================
+# Docker Compose is a tool for defining and running multi-container applications
+# Instead of running multiple "docker run" commands, we define everything here
+# in one YAML file and start everything with one command: "docker-compose up"
+#
+# THINK OF IT LIKE THIS:
+# - Docker = Individual Lego blocks (single containers)
+# - Docker Compose = The instruction manual that tells you how to build
+#   a complete Lego set with multiple connected pieces
+#
+# This file defines 3 services (containers) that work together:
+#   1. dynamodb-local  - Database for storing todos
+#   2. dotnet-api      - Backend API (C# .NET application)
+#   3. frontend        - Web interface (Vue.js served by nginx)
+# ============================================================================
+
+# ============================================================================
+# SERVICES SECTION
+# ============================================================================
+# "services" is where we define all the containers we want to run
+# Each service is a separate container with its own configuration
+services:
+
+  # ==========================================================================
+  # SERVICE 1: DynamoDB Local
+  # ==========================================================================
+  # Amazon DynamoDB is a NoSQL database (cloud service)
+  # DynamoDB Local is a downloadable version that runs on your computer
+  # Perfect for development/testing without needing AWS account!
+  dynamodb-local:
+    
+    # IMAGE: The base container image to use
+    # Instead of building from a Dockerfile, we pull a pre-built image
+    # from Docker Hub (amazon/dynamodb-local:latest)
+    #
+    # ANALOGY: Like downloading a pre-installed app vs compiling source code
+    image: amazon/dynamodb-local:latest
+    
+    # CONTAINER_NAME: Custom name for this container
+    # Without this, Docker generates random names like "flask-dynamo-demo_dynamodb-local_1"
+    # With this, we get a clean name: "dynamodb-local"
+    #
+    # WHY? Easier to identify in "docker ps" output and logs
+    container_name: dynamodb-local
+    
+    # PORTS: Map ports from container to host machine
+    # Format: "HOST_PORT:CONTAINER_PORT"
+    #
+    # "8000:8000" means:
+    #   - Container listens on port 8000 internally
+    #   - We expose it to the host machine also on port 8000
+    #   - You can access it at http://localhost:8000
+    #
+    # WHY NEED PORT MAPPING?
+    # Containers are isolated! Without this, the port is only accessible
+    # inside the container or to other containers on the same network.
+    # With this mapping, your HOST machine can access it too.
+    #
+    # VISUAL:
+    #   Host Machine (Your Computer)     |     Docker Container
+    #   localhost:8000  --------------->  |  ---> Port 8000 (DynamoDB)
+    ports:
+      - "8000:8000"
+    
+    # COMMAND: Override the default command that runs in the container
+    # This passes arguments to DynamoDBLocal.jar (the Java application)
+    #
+    # ARGUMENTS EXPLAINED:
+    #   -jar DynamoDBLocal.jar  = Run the DynamoDB Local JAR file
+    #   -sharedDb               = Use a shared database file (all tables in one file)
+    #   -inMemory               = Store data in RAM instead of disk
+    #
+    # WHY -inMemory?
+    # Faster performance, no file permission issues, perfect for development
+    # DOWNSIDE: Data is lost when container stops (fine for testing!)
+    #
+    # PRODUCTION NOTE: In production, you'd remove -inMemory and use persistent
+    # storage with Docker volumes to keep data across restarts
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
+    
+    # NETWORKS: Connect this container to a custom network
+    # Containers on the same network can talk to each other using container names
+    # 
+    # Here, "dynamodb-local" can be reached by other containers using the
+    # hostname "dynamodb-local" (Docker's built-in DNS resolution)
+    #
+    # EXAMPLE: dotnet-api connects to "http://dynamodb-local:8000"
+    networks:
+      - todo-net
+
+  # ==========================================================================
+  # SERVICE 2: .NET API (Backend)
+  # ==========================================================================
+  # Our custom C# .NET API that handles todo CRUD operations
+  dotnet-api:
+    
+    # BUILD: Instead of using a pre-built image, build from a Dockerfile
+    # Docker will look for a Dockerfile in the ./backend directory
+    #
+    # WHAT HAPPENS?
+    # 1. Docker reads ./backend/Dockerfile
+    # 2. Executes each instruction (FROM, COPY, RUN, etc.)
+    # 3. Creates a new image tagged as "flask-dynamo-demo_dotnet-api"
+    # 4. Creates a container from that image
+    #
+    # ANALOGY: Like compiling your source code before running it
+    build: ./backend
+    
+    # Custom container name for easy identification
+    container_name: dotnet-api
+    
+    # PORT MAPPING: Expose .NET API to host machine
+    # "5000:5000" means:
+    #   Container port 5000 (where .NET listens) → Host port 5000
+    #   Access at: http://localhost:5000
+    ports:
+      - "5000:5000"
+    
+    # ENVIRONMENT VARIABLES: Pass configuration to the container
+    # These become environment variables inside the container
+    # Our C# code reads these with Environment.GetEnvironmentVariable()
+    #
+    # DYNAMODB_ENDPOINT:
+    #   Notice we use "dynamodb-local" (container name), not "localhost"!
+    #   Inside the Docker network, containers reference each other by name
+    #   Docker's DNS resolves "dynamodb-local" to the correct container IP
+    #
+    # WHY NOT localhost?
+    #   "localhost" inside a container refers to THAT container, not the host!
+    #   Each container has its own localhost (127.0.0.1) that's isolated
+    #
+    # VISUAL:
+    #   dotnet-api container: "I need dynamodb-local"
+    #   Docker DNS: "dynamodb-local is at 172.18.0.2"
+    #   dotnet-api: Connects to 172.18.0.2:8000 ✓
+    #
+    # ASPNETCORE_ENVIRONMENT=Development:
+    #   Tells .NET to run in Development mode (detailed errors, etc.)
+    environment:
+      - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
+      - ASPNETCORE_ENVIRONMENT=Development
+    
+    # DEPENDS_ON: Define startup order
+    # This tells Docker: "Start dynamodb-local BEFORE starting dotnet-api"
+    #
+    # IMPORTANT: depends_on only waits for the container to START, not to be READY!
+    # That's why we also use healthcheck (see below) to wait until the API is
+    # actually responding to requests
+    #
+    # ANALOGY: Like waiting for the oven to turn on (depends_on) vs waiting
+    # for it to reach the right temperature (healthcheck)
+    depends_on:
+      - dynamodb-local
+    
+    # Connect to the same network as DynamoDB
+    # Now both containers can communicate using container names
+    networks:
+      - todo-net
+    
+    # RESTART POLICY: What to do if the container crashes?
+    # 
+    # OPTIONS:
+    #   no              = Never restart (default)
+    #   always          = Always restart, even after manual stop
+    #   on-failure      = Restart only if it crashes (exit code != 0)
+    #   unless-stopped  = Restart unless explicitly stopped by user
+    #
+    # "unless-stopped" is best for development:
+    #   - Auto-restarts if it crashes (catches bugs in development)
+    #   - Stops permanently when you run "docker-compose down"
+    restart: unless-stopped
+    
+    # HEALTHCHECK: Verify the container is actually working
+    # Docker will repeatedly run this command to check if the service is healthy
+    #
+    # HOW IT WORKS:
+    # 1. Docker waits "start_period" (10s) before starting health checks
+    # 2. Every "interval" (10s), Docker runs the test command
+    # 3. If the command returns exit code 0 → Healthy ✓
+    # 4. If it fails, Docker retries up to "retries" (5 times)
+    # 5. If all retries fail → Container marked as Unhealthy ✗
+    #
+    # THE TEST:
+    #   curl -f http://localhost:5000/health
+    #     -f = Fail on HTTP errors (returns non-zero exit code if not 200 OK)
+    #   
+    #   This hits our /health endpoint that returns {"status":"healthy"}
+    #
+    # WHY USE localhost HERE?
+    #   The health check runs INSIDE the dotnet-api container
+    #   So localhost correctly refers to the API itself
+    #
+    # IMPORTANCE:
+    #   The "frontend" service waits for dotnet-api to be HEALTHY (not just started)
+    #   before it starts. This prevents the frontend from showing errors because
+    #   the API isn't ready yet!
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s      # Check every 10 seconds
+      timeout: 5s        # Wait max 5 seconds for response
+      retries: 5         # Try 5 times before marking unhealthy
+      start_period: 10s  # Wait 10 seconds before first check (app startup time)
+
+  # ==========================================================================
+  # SERVICE 3: Vue.js Frontend (Web Interface)
+  # ==========================================================================
+  # The user-facing web application (HTML, CSS, JavaScript)
+  frontend:
+    
+    # IMAGE: Use nginx (web server) to serve static files
+    # nginx:alpine is a tiny version (~5MB) perfect for serving HTML/JS
+    #
+    # WHY NGINX?
+    #   Vue.js is just static files (HTML, CSS, JS)
+    #   We need a web server to serve them over HTTP
+    #   nginx is lightweight, fast, and industry-standard
+    #
+    # ALTERNATIVES: Apache, Caddy, or even Python's http.server
+    # nginx:alpine is the most efficient choice
+    image: nginx:alpine
+    
+    # Custom container name
+    container_name: vue-frontend
+    
+    # PORT MAPPING: Expose web interface to host
+    # "8080:80" means:
+    #   Container port 80 (nginx default) → Host port 8080
+    #   Access at: http://localhost:8080
+    #
+    # WHY 8080 and not 80?
+    #   Port 80 often requires admin privileges
+    #   Port 8080 is a common alternative for web apps
+    ports:
+      - "8080:80"
+    
+    # VOLUMES: Mount host directory into container
+    # Format: "HOST_PATH:CONTAINER_PATH:OPTIONS"
+    #
+    # ./frontend:/usr/share/nginx/html:ro
+    #   ./frontend                = Directory on your computer
+    #   /usr/share/nginx/html    = Default nginx document root (where it serves files from)
+    #   :ro                       = Read-only (container can't modify your files)
+    #
+    # MAGIC: Changes to files in ./frontend instantly appear in the browser!
+    # No need to rebuild the container ✓
+    #
+    # HOW IT WORKS:
+    #   Host: ./frontend/index.html
+    #   Container: /usr/share/nginx/html/index.html (same file!)
+    #   nginx serves this file at http://localhost:8080/index.html
+    #
+    # VISUAL:
+    #   Your Computer                    Docker Container (nginx)
+    #   ./frontend/                 <--> /usr/share/nginx/html/
+    #     ├── index.html            <--> ├── index.html
+    #     └── styles.css            <--> └── styles.css
+    #
+    # DEVELOPMENT WORKFLOW:
+    #   1. Edit ./frontend/index.html on your computer
+    #   2. Save the file
+    #   3. Refresh browser → Changes appear immediately! 🎉
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+    
+    # DEPENDS_ON with CONDITION: Advanced dependency management
+    # 
+    # This says: "Don't start frontend until dotnet-api is HEALTHY"
+    #
+    # IMPORTANT DISTINCTION:
+    #   depends_on: dynamodb-local           = Wait for container to START
+    #   depends_on: dotnet-api (condition)   = Wait for healthcheck to pass
+    #
+    # WHY?
+    #   When you first load the frontend (http://localhost:8080), it immediately
+    #   tries to connect to the API (http://localhost:5000). If the API isn't
+    #   ready yet, you get errors!
+    #
+    #   By waiting for service_healthy, we ensure the API is READY before
+    #   serving the frontend. Better user experience!
+    #
+    # STARTUP ORDER:
+    #   1. dynamodb-local starts
+    #   2. dotnet-api starts, waits 10s, healthcheck passes → HEALTHY
+    #   3. frontend starts (now it's safe!)
+    depends_on:
+      dotnet-api:
+        condition: service_healthy
+    
+    # Connect to the same network
+    # The frontend JavaScript makes API calls to http://localhost:5000
+    # (from the browser on the host machine, not from inside the container)
+    networks:
+      - todo-net
+    
+    # Restart policy for stability
+    restart: unless-stopped
+
+# ============================================================================
+# NETWORKS SECTION
+# ============================================================================
+# Define custom networks for container communication
+#
+# WHY CREATE A CUSTOM NETWORK?
+# By default, Docker Compose creates a network, but defining it explicitly
+# gives us more control and makes the architecture clearer
+networks:
+  
+  # NETWORK NAME: todo-net
+  # All three services connect to this network
+  todo-net:
+    
+    # DRIVER: The network driver to use
+    # 
+    # BRIDGE (default):
+    #   - Creates a virtual network inside Docker
+    #   - Containers can talk to each other using container names
+    #   - Isolated from host network (secure)
+    #   - Port mappings allow host access
+    #
+    # OTHER OPTIONS:
+    #   host    = Share host's network (no isolation, no port mapping needed)
+    #   overlay = For multi-host Docker Swarm clusters
+    #   macvlan = Give containers their own MAC addresses (advanced)
+    #
+    # BRIDGE is perfect for local development!
+    #
+    # HOW IT WORKS:
+    #   1. Docker creates a virtual network interface (like a virtual switch)
+    #   2. Each container gets its own IP on this network (e.g., 172.18.0.2)
+    #   3. Docker runs a DNS server that maps container names to IPs
+    #   4. Containers can reach each other using names: http://dynamodb-local:8000
+    #
+    # VISUAL:
+    #   ┌─────────────── todo-net (172.18.0.0/16) ───────────────┐
+    #   │                                                          │
+    #   │  dynamodb-local       dotnet-api        frontend       │
+    #   │  (172.18.0.2)        (172.18.0.3)      (172.18.0.4)   │
+    #   │       :8000              :5000              :80         │
+    #   │                                                          │
+    #   └──────────────────────────────────────────────────────────┘
+    #                           ↑
+    #                      Port Mappings
+    #                           ↓
+    #   Host Machine (Your Computer)
+    #   localhost:8000  localhost:5000  localhost:8080
+    driver: bridge
+
+# ============================================================================
+# HOW TO USE THIS FILE
+# ============================================================================
+# 
+# START ALL SERVICES:
+#   docker-compose up
+#     - Builds images if needed
+#     - Creates containers
+#     - Starts them in dependency order
+#     - Shows combined logs from all containers
+#
+#   docker-compose up -d
+#     - Same as above but "detached" (runs in background)
+#     - No logs shown, containers run silently
+#
+# STOP ALL SERVICES:
+#   docker-compose down
+#     - Stops all containers
+#     - Removes containers
+#     - Removes the network
+#     - Keeps images and volumes (data preserved if using volumes)
+#
+# VIEW LOGS:
+#   docker-compose logs            # All services
+#   docker-compose logs dotnet-api # Specific service
+#   docker-compose logs -f         # Follow mode (live updates)
+#
+# REBUILD AFTER CODE CHANGES:
+#   docker-compose up --build
+#     - Forces rebuild of images (needed after changing Dockerfile or backend code)
+#     - Frontend changes (HTML/CSS/JS) are instant due to volume mounting!
+#
+# CHECK STATUS:
+#   docker-compose ps
+#     - Shows all services and their status (healthy, unhealthy, running, exited)
+#
+# ============================================================================
+# ARCHITECTURE SUMMARY
+# ============================================================================
+#
+# REQUEST FLOW (User adds a todo):
+#
+#   1. User opens browser → http://localhost:8080
+#   2. nginx serves index.html from ./frontend folder
+#   3. Vue.js loads in browser, makes API call to http://localhost:5000/todos
+#   4. Request goes to host port 5000 → mapped to dotnet-api container
+#   5. .NET API receives request, calls DynamoDB at http://dynamodb-local:8000
+#   6. DynamoDB (in-memory) stores the todo
+#   7. Response flows back: DynamoDB → .NET API → Browser
+#   8. Vue.js updates the UI to show the new todo
+#
+# NETWORK DIAGRAM:
+#
+#   ┌──────────────────────────────────────────────────────────────┐
+#   │ Your Computer (Host)                                          │
+#   │                                                                │
+#   │  Browser                                                       │
+#   │    ↓ http://localhost:8080 (Frontend)                        │
+#   │    ↓ http://localhost:5000 (API calls)                       │
+#   └───────────────────────┬──────────────────────────────────────┘
+#                           │ Port Mappings
+#   ┌───────────────────────┴──────────────────────────────────────┐
+#   │ Docker Network (todo-net)                                     │
+#   │                                                                │
+#   │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐      │
+#   │  │  frontend   │    │ dotnet-api  │    │ dynamodb-   │      │
+#   │  │   (nginx)   │    │  (.NET 8)   │    │   local     │      │
+#   │  │   :80       │    │   :5000     │    │   :8000     │      │
+#   │  └─────────────┘    └─────────────┘    └─────────────┘      │
+#   │         │                    │                   │            │
+#   │         │                    └───────────────────┘            │
+#   │         │                    API calls DynamoDB               │
+#   │         │                    using container name             │
+#   └─────────┴────────────────────────────────────────────────────┘
+#
+# ============================================================================
