@@ -1,0 +1,223 @@
+# ============================================================================
+# 🗄️ DYNAMODB: THE RESTAURANT PANTRY
+# ============================================================================
+# SIMPLE ANALOGY:
+# This file sets up the PANTRY where all ingredients (data) are stored.
+# The pantry keeps track of what you have in stock (todos, users, etc.)
+# Only one pantry manager needed - multiple would cause confusion about inventory!
+# ============================================================================
+
+# ============================================================================
+# KUBERNETES DEPLOYMENT FOR DYNAMODB
+# ============================================================================
+# WHAT IS A DEPLOYMENT?
+# A Deployment is like a "manager" that ensures your application is always running.
+# If a container crashes, the Deployment creates a new one automatically.
+#
+# ANALOGY: Think of a Deployment like a restaurant manager who ensures there's
+# always a chef in the kitchen. If the chef goes home sick, the manager hires
+# a replacement immediately.
+# ============================================================================
+
+apiVersion: apps/v1  # Which version of the Kubernetes API to use
+kind: Deployment     # What kind of resource are we creating?
+metadata:
+  # NAME: How to identify this Deployment
+  # You'll use this name in kubectl commands like: kubectl get deployment dynamodb
+  name: dynamodb
+  
+  # LABELS: Tags for organizing resources
+  # Like putting a sticker on a folder to categorize it
+  labels:
+    app: dynamodb
+
+spec:
+  # ============================================================================
+  # REPLICAS: How many identical copies (Pods) to run
+  # ============================================================================
+  # For a database, we use 1 replica to avoid data conflicts
+  # (Multiple databases writing to the same in-memory store = chaos!)
+  #
+  # ANALOGY: You wouldn't want two chefs cooking the same dish simultaneously
+  # in the same pot - they'd mess each other up!
+  replicas: 1
+  
+  # ============================================================================
+  # SELECTOR: How does the Deployment find its Pods?
+  # ============================================================================
+  # The Deployment looks for Pods with matching labels
+  # This must match the labels in the template below!
+  #
+  # ANALOGY: Like a teacher calling roll - they look for students whose names
+  # match the attendance list
+  selector:
+    matchLabels:
+      app: dynamodb  # Find Pods with label "app: dynamodb"
+  
+  # ============================================================================
+  # TEMPLATE: The blueprint for creating Pods
+  # ============================================================================
+  # This describes what each Pod should look like
+  # Every Pod created by this Deployment will be identical
+  template:
+    metadata:
+      # LABELS: Tags attached to each Pod
+      # These MUST match the selector above!
+      # Otherwise, the Deployment won't recognize its own Pods
+      #
+      # ANALOGY: Like putting a name tag on each employee so the manager
+      # knows who works for them
+      labels:
+        app: dynamodb
+    
+    spec:
+      # ========================================================================
+      # CONTAINERS: List of containers to run in this Pod
+      # ========================================================================
+      # A Pod can have multiple containers (like a multi-person office)
+      # Here we only need one container (single-person office)
+      containers:
+      - name: dynamodb  # Name of this container (for identification in logs)
+        
+        # IMAGE: The Docker image to use
+        # Kubernetes pulls this from Docker Hub (or your registry)
+        # "latest" tag = always use the newest version
+        #
+        # ANALOGY: Like downloading the latest version of an app from the app store
+        image: amazon/dynamodb-local:latest
+        
+        # ======================================================================
+        # PORTS: Which network ports does this container use?
+        # ======================================================================
+        # This is documentation + allows Kubernetes to route traffic correctly
+        ports:
+        - containerPort: 8000  # DynamoDB listens on port 8000
+          name: dynamodb       # Give this port a friendly name
+        
+        # ======================================================================
+        # ARGS: Command-line arguments passed to the container
+        # ======================================================================
+        # These are the same arguments we used in docker-compose.yml
+        # They tell DynamoDB how to run
+        args:
+          - "-jar"               # Run the JAR file
+          - "DynamoDBLocal.jar"  # The DynamoDB application
+          - "-sharedDb"          # Use one database file for all tables
+          - "-inMemory"          # Store data in RAM (fast, but lost on restart)
+        
+        # ======================================================================
+        # RESOURCES: CPU and memory limits
+        # ======================================================================
+        # WHY NEEDED?
+        # Without limits, one Pod could use all the server's resources
+        # and starve other Pods (like one person eating all the pizza!)
+        #
+        # TWO TYPES:
+        # - requests: Minimum guaranteed (reserved parking spot)
+        # - limits: Maximum allowed (fence around parking spot)
+        resources:
+          requests:
+            # MEMORY: Minimum RAM guaranteed to this container
+            # "256Mi" = 256 Mebibytes (roughly 268 MB)
+            # Kubernetes reserves this memory even if not used
+            memory: "256Mi"
+            
+            # CPU: Minimum CPU guaranteed
+            # "250m" = 0.25 CPU cores (1000m = 1 full core)
+            # ANALOGY: Like reserving 25% of a worker's time for this task
+            cpu: "250m"
+          
+          limits:
+            # MEMORY: Maximum RAM this container can use
+            # If it tries to use more, Kubernetes kills it (OOM - Out Of Memory)
+            # ANALOGY: Like a budget - you can't spend more than this
+            memory: "512Mi"
+            
+            # CPU: Maximum CPU this container can use
+            # "500m" = 0.5 CPU cores
+            # Container gets throttled if it tries to use more
+            cpu: "500m"
+
+---
+# ============================================================================
+# KUBERNETES SERVICE FOR DYNAMODB
+# ============================================================================
+# WHAT IS A SERVICE?
+# A Service provides a stable network address for Pods.
+#
+# WHY NEEDED?
+# Pods are like cattle, not pets:
+# - They get random IP addresses (like 10.42.0.23)
+# - They can be killed and recreated anytime (new IP each time!)
+# - You can't hardcode Pod IPs in your code
+#
+# A Service gives them a stable DNS name that never changes!
+#
+# ANALOGY: Pods are like employees who might get reassigned to different desks
+# (IP addresses) every day. The Service is like a reception desk that always
+# knows where to find them. You call the reception (Service), and they forward
+# you to wherever the employee is sitting today.
+# ============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  # NAME: The DNS name that other Pods will use
+  # Other containers will connect to: http://dynamodb-service:8000
+  #
+  # IMPORTANT: Notice we added "-service" suffix for clarity
+  # This helps distinguish between the Deployment name and Service name
+  name: dynamodb-service
+
+spec:
+  # ============================================================================
+  # SELECTOR: Which Pods does this Service route traffic to?
+  # ============================================================================
+  # The Service looks for Pods with these labels
+  # Any Pod with "app: dynamodb" gets traffic from this Service
+  #
+  # HOW IT WORKS:
+  # 1. Service constantly watches for Pods with matching labels
+  # 2. Maintains a list of their IP addresses
+  # 3. Load-balances traffic across all healthy Pods
+  #
+  # ANALOGY: Like a receptionist who keeps an updated phone directory
+  # of all employees in the "DynamoDB department"
+  selector:
+    app: dynamodb
+  
+  # ============================================================================
+  # PORTS: How to route network traffic
+  # ============================================================================
+  ports:
+  - port: 8000        # PORT: The port the Service exposes
+                      # Other Pods connect to: dynamodb-service:8000
+    
+    targetPort: 8000  # TARGET PORT: The port on the container
+                      # Service forwards traffic from port 8000 → container's 8000
+                      # (Could be different! e.g., Service:80 → Container:8080)
+    
+    protocol: TCP     # PROTOCOL: TCP or UDP
+                      # HTTP uses TCP (reliable, ordered delivery)
+    
+    name: dynamodb    # NAME: Friendly name for this port mapping
+                      # Useful when a Service exposes multiple ports
+  
+  # ============================================================================
+  # TYPE: How is this Service exposed?
+  # ============================================================================
+  # ClusterIP (default): Only accessible within the cluster
+  # - Other Pods can reach it
+  # - Your browser CANNOT reach it
+  # - Use this for internal services (like databases)
+  #
+  # OTHER OPTIONS:
+  # - NodePort: Exposes on each node's IP at a static port (30000-32767)
+  #   Your browser CAN reach it at: http://localhost:30080
+  # - LoadBalancer: Creates an external load balancer (cloud providers only)
+  #
+  # ANALOGY:
+  # - ClusterIP = Internal company phone line (only employees can call)
+  # - NodePort = Reception desk phone (outsiders can call this number)
+  # - LoadBalancer = 1-800 number with call routing (fancy!)
+  type: ClusterIP

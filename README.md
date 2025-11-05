@@ -58,8 +58,66 @@ docker-compose down
 - Configures ports, health checks, and startup order
 - **Heavily commented** - read it to understand the full setup!
 
+
 **📄 backend/Dockerfile** - The chef's recipe book
 - Multi-stage build: Build with SDK (1.2GB), run with runtime (220MB)
 - Copies your .NET code and compiles it
 - Creates a secure, minimal container
 - **Every line explained** - great for learning Docker!
+
+---
+
+## 🚀 Next Step: Kubernetes
+
+Once you're comfortable with Docker Compose, level up to **Kubernetes**!
+
+### Docker Compose vs Kubernetes
+
+| Feature | Docker Compose | Kubernetes |
+|---------|----------------|------------|
+| **Scale** | Single machine | Multiple machines (cluster) |
+| **Availability** | If container dies, you restart manually | Auto-restarts failed containers |
+| **Load Balancing** | No built-in | Yes, distributes traffic automatically |
+| **Production Ready** | ❌ Development only | ✅ Production grade |
+
+### Restaurant Analogy
+
+- **Docker Compose** = Running a **food truck** 🚚
+  - One vehicle (your machine)
+  - If the truck breaks down, everything stops
+  - You manage everything yourself
+  
+- **Kubernetes** = Running a **restaurant chain** 🏢
+  - Multiple locations (nodes)
+  - If one location has issues, others keep serving
+  - Corporate managers (controllers) handle staffing automatically
+  - Self-healing: A chef doesn't show up? A replacement is called in instantly
+
+### Why Kubernetes?
+
+In the real world, production apps need:
+- ✅ **High Availability** - If one server crashes, others take over (no downtime!)
+- ✅ **Auto-Scaling** - Automatically add more containers when traffic increases
+- ✅ **Self-Healing** - Crashed containers are automatically restarted
+- ✅ **Load Balancing** - Spread traffic across multiple container replicas
+- ✅ **Zero-Downtime Updates** - Update your app without taking it offline
+
+### 📚 Ready to Deploy on Kubernetes?
+
+Check out **[KUBERNETES.md](./KUBERNETES.md)** for:
+- Complete glossary of Kubernetes terms (with analogies!)
+- Step-by-step deployment guide
+- How to test load balancing between replicas
+- Troubleshooting common issues
+- Understanding self-healing in action
+
+**The Progression:**
+```
+Docker (Hour 1-2) → Docker Compose (Hour 2) → Kubernetes (Hour 3) → Production! 🎉
+     ↓                    ↓                         ↓
+  One container    Multiple containers on     Multiple containers on
+  on your machine    your machine (local)     multiple machines (cluster)
+```
+
+👉 **[Start with Kubernetes →](./KUBERNETES.md)**
+

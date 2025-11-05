@@ -1,0 +1,301 @@
+# ============================================================================
+# 🌐 FRONTEND: THE RESTAURANT HOST STAND
+# ============================================================================
+# SIMPLE ANALOGY:
+# This file sets up the HOST STAND where customers (users) enter the restaurant.
+# The host (nginx) greets customers, seats them, and directs their requests
+# to the kitchen (backend API) when they want to order food.
+# ============================================================================
+
+# ============================================================================
+# KUBERNETES CONFIGMAP FOR FRONTEND
+# ============================================================================
+# WHAT IS A CONFIGMAP?
+# A ConfigMap stores configuration data (files or key-value pairs) that
+# Pods can use. Think of it as a shared filing cabinet that multiple
+# employees (Pods) can access.
+#
+# WHY USE IT HERE?
+# We need to configure nginx to proxy API requests from the frontend
+# Instead of building a custom nginx image with the config baked in,
+# we store the config in a ConfigMap and mount it into the container
+#
+# ANALOGY: Like a company handbook that all employees can reference
+# If the handbook changes, everyone instantly sees the update
+# ============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-nginx-config
+
+data:
+  # ============================================================================
+  # NGINX CONFIGURATION FILE
+  # ============================================================================
+  # The key "default.conf" becomes the filename
+  # The value (below) becomes the file contents
+  # This file will be mounted at: /etc/nginx/conf.d/default.conf
+  #
+  # WHAT DOES THIS CONFIG DO?
+  # 1. Serves static files (HTML, CSS, JS) from /usr/share/nginx/html
+  # 2. Proxies /api/* requests to the backend API
+  #
+  # WHY PROXY?
+  # Browser: http://localhost:30080/api/todos
+  #   ↓
+  # nginx: "Oh, /api/ requests go to the backend!"
+  #   ↓
+  # nginx forwards to: http://dotnet-api-service:5000/todos
+  #   ↓
+  # Backend processes and responds
+  #   ↓
+  # nginx sends response back to browser
+  #
+  # BENEFIT: The browser doesn't need to know about the backend's address!
+  # Also avoids CORS issues (all requests appear to come from same origin)
+  default.conf: |
+    server {
+        # LISTEN: Which port should nginx listen on?
+        listen 80;
+        
+        # SERVER_NAME: Which hostnames to respond to
+        # "localhost" matches when you visit http://localhost:30080
+        server_name localhost;
+        
+        # ======================================================================
+        # LOCATION /: Serve static files (Vue.js)
+        # ======================================================================
+        # When someone visits http://localhost:30080/
+        # nginx serves files from /usr/share/nginx/html
+        location / {
+            root /usr/share/nginx/html;  # Where files are stored
+            index index.html;             # Default file to serve
+            
+            # TRY_FILES: How to handle requests
+            # Try these in order:
+            # 1. $uri - exact file path (e.g., /styles.css)
+            # 2. $uri/ - directory with index (e.g., /about/ → /about/index.html)
+            # 3. /index.html - fallback (for Vue Router's history mode)
+            #
+            # ANALOGY: Like trying your house key, then the spare key, then
+            # calling someone to let you in
+            try_files $uri $uri/ /index.html;
+        }
+        
+        # ======================================================================
+        # LOCATION /api/: Proxy to backend API
+        # ======================================================================
+        # When browser requests http://localhost:30080/api/todos
+        # nginx forwards to http://dotnet-api-service:5000/todos
+        location /api/ {
+            # REWRITE: Remove /api prefix before forwarding
+            # Browser calls: /api/todos
+            # We forward: /todos (backend doesn't have /api prefix!)
+            #
+            # REGEX EXPLAINED:
+            # ^/api/(.*)  = Match anything after /api/
+            # /$1         = Replace with / + captured group
+            # break       = Stop processing other rewrites
+            rewrite ^/api/(.*) /$1 break;
+            
+            # PROXY_PASS: Where to forward the request
+            # Notice: We use the Service name "dotnet-api-service"!
+            # Kubernetes DNS resolves this to the actual Pod IPs
+            #
+            # ANALOGY: Like calling "sales department" and the receptionist
+            # routes you to an available sales rep
+            proxy_pass http://dotnet-api-service:5000;
+            
+            # PROXY HEADERS: Configure how the request is forwarded
+            # These preserve information about the original request
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection 'upgrade';
+            proxy_set_header Host $host;
+            proxy_cache_bypass $http_upgrade;
+        }
+    }
+
+---
+# ============================================================================
+# KUBERNETES DEPLOYMENT FOR FRONTEND
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+
+spec:
+  # Run 2 replicas for high availability
+  # If one Pod crashes, the other keeps serving your website
+  replicas: 2
+  
+  selector:
+    matchLabels:
+      app: frontend
+  
+  template:
+    metadata:
+      labels:
+        app: frontend
+    
+    spec:
+      containers:
+      - name: nginx
+        # Use nginx:alpine (only 5MB! Super lightweight!)
+        # Alpine Linux = minimalist Linux distro
+        #
+        # COMPARISON:
+        # - nginx:latest = ~140MB (includes lots of extra tools)
+        # - nginx:alpine = ~5MB (just nginx, nothing else)
+        #
+        # ANALOGY: Like buying a bicycle vs a motorcycle
+        # Both get you there, but one is lighter and simpler
+        image: nginx:alpine
+        
+        ports:
+        - containerPort: 80  # nginx listens on port 80 (standard HTTP)
+          name: http
+        
+        # ======================================================================
+        # VOLUME MOUNTS: Attach storage to the container
+        # ======================================================================
+        # Volumes are like USB drives you plug into the container
+        # The container can read/write to these locations
+        volumeMounts:
+        # MOUNT 1: nginx configuration
+        # Takes the ConfigMap data and mounts it as a file
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d  # Where nginx looks for config files
+          
+          # RESULT: The default.conf from ConfigMap appears at:
+          # /etc/nginx/conf.d/default.conf inside the container
+        
+        # MOUNT 2: Frontend files (HTML, CSS, JS)
+        # Mount the Vue.js app files so nginx can serve them
+        - name: frontend-files
+          mountPath: /usr/share/nginx/html  # Standard nginx web root
+          readOnly: true  # Container can only READ, not write
+                         # (Security - prevent tampering with files)
+        
+        resources:
+          requests:
+            # Frontend needs very little resources
+            # It's just serving static files!
+            memory: "64Mi"   # 64 MB RAM
+            cpu: "50m"       # 5% of one CPU core
+          
+          limits:
+            memory: "128Mi"  # Max 128 MB RAM
+            cpu: "100m"      # Max 10% of one CPU core
+            
+            # WHY SO LITTLE?
+            # nginx is extremely efficient at serving static files
+            # No database queries, no business logic, just file serving
+            #
+            # ANALOGY: Like a vending machine - it doesn't need much power
+            # because it just hands out pre-packaged items
+      
+      # ========================================================================
+      # VOLUMES: Define where the data comes from
+      # ========================================================================
+      # This section says "where do the mounted volumes get their data?"
+      volumes:
+      # VOLUME 1: nginx config comes from ConfigMap
+      - name: nginx-config
+        configMap:
+          name: frontend-nginx-config  # Reference to our ConfigMap above
+      
+      # VOLUME 2: Frontend files come from host machine
+      # WARNING: This is a DEVELOPMENT-ONLY approach!
+      # ========================================================================
+      # HOSTPATH: Mount a directory from the host machine
+      #
+      # /tmp/frontend → Path on your computer (host)
+      # This directory must exist and contain your frontend files!
+      #
+      # WHY THIS WORKS WITH RANCHER DESKTOP:
+      # Rancher Desktop has special integration that allows hostPath
+      # to access directories on Windows/Mac
+      #
+      # PRODUCTION ALTERNATIVE:
+      # In production, you'd build a custom Docker image:
+      #   FROM nginx:alpine
+      #   COPY ./frontend /usr/share/nginx/html
+      #
+      # Then push to a registry and use that image instead of hostPath
+      #
+      # ANALOGY: hostPath = bringing your lunch from home
+      #          Custom image = buying lunch at the office cafeteria
+      - name: frontend-files
+        hostPath:
+          path: /tmp/frontend  # Must exist on your machine!
+          type: Directory      # Must be a directory (not a file)
+
+---
+# ============================================================================
+# KUBERNETES SERVICE FOR FRONTEND
+# ============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+
+spec:
+  selector:
+    app: frontend
+  
+  ports:
+  - port: 80           # Service listens on port 80
+    targetPort: 80     # Forwards to container's port 80
+    protocol: TCP
+    name: http
+    
+    # ========================================================================
+    # NODE PORT: Expose on the host machine
+    # ========================================================================
+    # This makes the Service accessible from OUTSIDE the cluster
+    # You can access it at: http://localhost:30080
+    #
+    # PORT RANGE: NodePort must be 30000-32767
+    # (Kubernetes reserves this range for external access)
+    #
+    # WHY 30080?
+    # - Below 30000 = not allowed by Kubernetes
+    # - 30080 is easy to remember (similar to 8080)
+    #
+    # ANALOGY: Like a receptionist's extension number
+    # External callers dial 30080 to reach the frontend department
+    nodePort: 30080
+  
+  # ============================================================================
+  # TYPE: NodePort (external access)
+  # ============================================================================
+  # SERVICE TYPES COMPARISON:
+  #
+  # ClusterIP (used for API & DB):
+  # - Only accessible within cluster
+  # - Use for internal services
+  # - Like an internal phone extension
+  #
+  # NodePort (used for Frontend):
+  # - Accessible from outside cluster
+  # - Exposes on host machine's IP + NodePort
+  # - Use for services users need to access
+  # - Like a public phone number
+  #
+  # LoadBalancer (not used here):
+  # - Creates external load balancer (cloud providers only)
+  # - Auto-assigns public IP
+  # - Most expensive option
+  # - Like a 1-800 number with call routing
+  #
+  # ANALOGY FOR THIS APP:
+  # - DynamoDB & API = Kitchen staff (internal, ClusterIP)
+  # - Frontend = Host stand (customers enter here, NodePort)
+  type: NodePort

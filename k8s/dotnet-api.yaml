@@ -1,0 +1,269 @@
+# ============================================================================
+# 👨‍🍳 .NET API: THE RESTAURANT KITCHEN
+# ============================================================================
+# SIMPLE ANALOGY:
+# This file sets up the KITCHEN where chefs (API servers) prepare meals (process requests).
+# We have 2 chefs working - if one is busy or takes a break, the other handles orders.
+# The kitchen gets ingredients from the pantry (DynamoDB) and serves to customers (via frontend).
+# ============================================================================
+
+# ============================================================================
+# KUBERNETES DEPLOYMENT FOR .NET API
+# ============================================================================
+# This Deployment manages our .NET backend API
+# Unlike DynamoDB (which needs 1 replica), we can run multiple API replicas
+# for high availability and load distribution
+# ============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dotnet-api
+  labels:
+    app: dotnet-api
+
+spec:
+  # ============================================================================
+  # REPLICAS: Run 2 copies of the API
+  # ============================================================================
+  # WHY 2?
+  # - If one crashes, the other keeps serving traffic (high availability)
+  # - Kubernetes automatically load-balances requests between them
+  # - Can handle more traffic (horizontal scaling)
+  #
+  # ANALOGY: Like having 2 cashiers instead of 1 - if one takes a break,
+  # the other keeps serving customers. Also, they can split the workload.
+  replicas: 2
+  
+  selector:
+    matchLabels:
+      app: dotnet-api
+  
+  template:
+    metadata:
+      labels:
+        app: dotnet-api
+    
+    spec:
+      containers:
+      - name: dotnet-api
+        
+        # ======================================================================
+        # IMAGE: The Docker image for our .NET API
+        # ======================================================================
+        # IMPORTANT: This image must exist locally or in a registry!
+        # Before deploying, you need to build it:
+        #   docker build -t dotnet-api:latest ./backend
+        #
+        # FORMAT: <registry>/<repository>:<tag>
+        # - No registry = uses local image or Docker Hub
+        # - "latest" tag = use the most recent version
+        image: dotnet-api:latest
+        
+        # ======================================================================
+        # IMAGE PULL POLICY: When to download the image?
+        # ======================================================================
+        # "Never" = ALWAYS use local image, never pull from registry
+        #
+        # WHY "Never" for development?
+        # We're building the image locally with Rancher Desktop
+        # We don't want Kubernetes trying to pull from Docker Hub
+        #
+        # OTHER OPTIONS:
+        # - Always: Pull every time (good for testing latest changes)
+        # - IfNotPresent: Pull only if not found locally (default for non-:latest tags)
+        #
+        # ANALOGY: "Never" = always use the homemade cookies in your kitchen,
+        # don't order from outside. "Always" = order fresh cookies every time.
+        imagePullPolicy: Never
+        
+        ports:
+        - containerPort: 5000  # .NET API listens on port 5000
+          name: http           # Call this port "http" (HTTP traffic)
+        
+        # ======================================================================
+        # ENVIRONMENT VARIABLES: Configuration for the container
+        # ======================================================================
+        # These replace the "environment:" section from docker-compose.yml
+        # The .NET app reads these with Environment.GetEnvironmentVariable()
+        env:
+        - name: DYNAMODB_ENDPOINT
+          # CRITICAL: Notice we use "dynamodb-service" (the Service name!)
+          # NOT "dynamodb-local" like in docker-compose
+          #
+          # WHY?
+          # In Kubernetes, Services provide DNS names
+          # The API calls: http://dynamodb-service:8000
+          # Kubernetes DNS resolves "dynamodb-service" → Pod IPs
+          #
+          # ANALOGY: Like calling "reception" instead of "Bob's extension"
+          # Reception forwards to whoever is available (load balancing!)
+          value: "http://dynamodb-service:8000"
+        
+        - name: ASPNETCORE_ENVIRONMENT
+          # Run in Development mode (detailed error messages)
+          value: "Development"
+        
+        - name: ASPNETCORE_URLS
+          # Listen on all network interfaces (not just localhost)
+          # "+:5000" means 0.0.0.0:5000 (all interfaces)
+          #
+          # WHY NEEDED?
+          # If the app only listens on localhost, requests from other Pods
+          # won't reach it (they'd be blocked at the network layer)
+          value: "http://+:5000"
+        
+        # ======================================================================
+        # READINESS PROBE: Is the container ready to receive traffic?
+        # ======================================================================
+        # Kubernetes won't send traffic to a Pod until this passes
+        #
+        # USE CASE: Your app needs time to:
+        # - Connect to the database
+        # - Load configuration
+        # - Warm up caches
+        #
+        # ANALOGY: Like a chef saying "I'm ready to take orders!" only after
+        # the kitchen is prepped, ingredients are ready, and stove is hot.
+        readinessProbe:
+          # TYPE: HTTP GET request
+          # Kubernetes calls the /health endpoint
+          httpGet:
+            path: /health    # Which endpoint to call
+            port: 5000       # On which port
+          
+          # TIMING CONFIGURATION:
+          initialDelaySeconds: 10  # Wait 10 seconds before first check
+                                   # (gives app time to start up)
+          
+          periodSeconds: 5         # Check every 5 seconds
+                                   # (how often to poll)
+          
+          timeoutSeconds: 3        # Wait max 3 seconds for response
+                                   # (if slower, consider it failed)
+          
+          successThreshold: 1      # 1 success = mark as Ready
+                                   # (how many passes needed)
+          
+          failureThreshold: 3      # 3 failures = mark as Not Ready
+                                   # (how many fails before giving up)
+          
+          # WHAT HAPPENS?
+          # - While Not Ready: Pod exists but receives no traffic
+          # - When Ready: Service starts sending requests to this Pod
+          # - If becomes Not Ready: Service stops sending traffic
+          #
+          # ANALOGY: Like a "CLOSED" sign on a store. People can see the store,
+          # but won't enter until the sign flips to "OPEN"
+        
+        # ======================================================================
+        # LIVENESS PROBE: Is the container still working correctly?
+        # ======================================================================
+        # If this fails repeatedly, Kubernetes RESTARTS the container
+        #
+        # USE CASE: Catch deadlocks, infinite loops, or corrupted state
+        # Your app might be running but stuck/broken (zombie state)
+        #
+        # DIFFERENCE FROM READINESS:
+        # - Readiness: "Am I ready to work?" (don't send me traffic yet)
+        # - Liveness: "Am I still alive?" (restart me if I'm frozen)
+        #
+        # ANALOGY: Readiness = "Is the restaurant open?"
+        #          Liveness = "Is anyone actually in the kitchen?"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          
+          initialDelaySeconds: 30  # Wait 30s before first liveness check
+                                   # (longer than readiness - app needs warmup)
+          
+          periodSeconds: 10        # Check every 10 seconds
+                                   # (less frequent than readiness)
+          
+          timeoutSeconds: 3
+          
+          failureThreshold: 3      # 3 failures = RESTART the container
+                                   # (nuclear option - complete reboot)
+          
+          # WHAT HAPPENS ON FAILURE?
+          # 1. Kubernetes kills the container
+          # 2. Creates a new container from the same image
+          # 3. Waits for readiness probe to pass
+          # 4. Starts sending traffic again
+          #
+          # ANALOGY: Like rebooting your computer when it freezes
+        
+        # ======================================================================
+        # RESOURCES: CPU and memory limits
+        # ======================================================================
+        resources:
+          requests:
+            memory: "256Mi"  # Minimum RAM reserved
+            cpu: "250m"      # Minimum CPU (0.25 cores)
+          
+          limits:
+            memory: "512Mi"  # Maximum RAM (killed if exceeded)
+            cpu: "1000m"     # Maximum CPU (1 full core)
+            
+            # WHY MORE GENEROUS THAN DYNAMODB?
+            # The API does more work:
+            # - Handles HTTP requests
+            # - JSON serialization/deserialization
+            # - Business logic
+            # - Talks to database
+            #
+            # ANALOGY: A waiter (API) needs more energy than a pantry (DB)
+            # because they're running around serving customers!
+
+---
+# ============================================================================
+# KUBERNETES SERVICE FOR .NET API
+# ============================================================================
+# Provides a stable endpoint for the API
+# The frontend will connect to this Service name
+# ============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: dotnet-api-service
+
+spec:
+  # ============================================================================
+  # SELECTOR: Route traffic to Pods with label "app: dotnet-api"
+  # ============================================================================
+  # Since we have 2 replicas, the Service will load-balance between both!
+  #
+  # HOW LOAD BALANCING WORKS:
+  # 1. Request comes in → http://dotnet-api-service:5000/todos
+  # 2. Service has list of 2 healthy Pod IPs: [10.42.0.5, 10.42.0.6]
+  # 3. Service picks one (round-robin or random)
+  # 4. Forwards request to that Pod
+  # 5. Next request goes to the other Pod
+  #
+  # ANALOGY: Like a maitre d' at a restaurant who seats customers across
+  # different tables evenly (not putting everyone at table 1!)
+  selector:
+    app: dotnet-api
+  
+  ports:
+  - port: 5000         # Service exposes port 5000
+    targetPort: 5000   # Forwards to container's port 5000
+    protocol: TCP
+    name: http
+  
+  # ============================================================================
+  # TYPE: ClusterIP (internal only)
+  # ============================================================================
+  # The API is an internal service
+  # - Other Pods (like frontend) can reach it
+  # - Your browser CANNOT directly reach it
+  #
+  # WHY?
+  # Security! We don't want the API exposed directly to the internet
+  # The frontend (nginx) acts as a gateway/proxy
+  #
+  # ANALOGY: Like a kitchen in a restaurant - customers don't go directly
+  # to the kitchen, they tell the waiter (frontend) what they want
+  type: ClusterIP
